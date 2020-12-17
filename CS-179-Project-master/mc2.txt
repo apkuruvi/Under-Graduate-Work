@@ -1,0 +1,292 @@
+/*	Partner(s) Name & E-mail: Abraham Kuruvila akuru003@ucr.edu No Partner
+ *	Lab Section: 21
+ *	Assignment: Project
+ *	Exercise Description: Coin Filtering Vending machine. 
+ *	
+ *	I acknowledge all content contained herein, excluding template or example
+ *	code, is my own original work.
+ */
+#include <stdint.h> 
+#include <stdlib.h> 
+#include <avr/eeprom.h>
+#include <avr/io.h>
+#include "io.c"
+#include <stdio.h> 
+#include <stdbool.h> 
+#include <string.h> 
+#include <math.h> 
+#include <avr/io.h> 
+#include <avr/interrupt.h> 
+#include <avr/eeprom.h> 
+#include <avr/portpins.h> 
+#include <usart_ATmega1284.h>
+#include <avr/pgmspace.h> 
+//FreeRTOS include files 
+#include "FreeRTOS.h" 
+#include "task.h" 
+#include "croutine.h" 
+unsigned char a = 0x00;
+unsigned short temp = 0x0000;
+float temperature;
+int selection = 0;
+int counter = 0;
+int flag = 0;
+int motor = 0; 
+int i = 0;
+unsigned char test[];
+char ar[32] = "Temp:           Dog Status:     ";
+int check = 0;
+uint16_t dogstatus;
+short sensor;
+// Bit-access function
+unsigned char SetBit(unsigned char x, unsigned char k, unsigned char b) {
+	return (b ? x | (0x01 << k) : x & ~(0x01 << k));
+}
+unsigned char GetBit(unsigned char x, unsigned char k) {
+	return ((x & (0x01 << k)) != 0);
+}
+
+
+void adc_init()
+{
+	ADMUX = (1<<REFS0);
+
+	ADCSRA = (1<<ADEN)|(1<<ADPS2)|(1<<ADPS1)|(1<<ADPS0);
+}
+
+// read adc value
+uint16_t adc_read(uint8_t ch)
+{
+	ch &= 0b00000111;
+	ADMUX = (ADMUX & 0xF8)|ch;
+	ADCSRA |= (1<<ADSC);
+	
+	while(ADCSRA & (1<<ADSC));
+
+	return (ADC);
+}
+
+void ftoa(float Value, char* Buffer)
+{
+	union
+	{
+		float f;
+		struct
+		{
+			unsigned int    mantissa_lo : 16;
+			unsigned int    mantissa_hi : 7;
+			unsigned int     exponent : 8;
+			unsigned int     sign : 1;
+		};
+	} helper;
+	unsigned long mantissa;
+	signed char exponent;
+	unsigned int int_part;
+	char frac_part[3];
+	int i, count = 0;
+	helper.f = Value;
+	//mantissa is LS 23 bits
+	mantissa = helper.mantissa_lo;
+	mantissa += ((unsigned long) helper.mantissa_hi << 16);
+	//add the 24th bit to get 1.mmmm^eeee format
+	mantissa += 0x00800000;
+	//exponent is biased by 127
+	exponent = (signed char) helper.exponent - 127;
+	//too big to shove into 8 chars
+	if (exponent > 18)
+	{
+		Buffer[0] = 'I';
+		Buffer[1] = 'n';
+		Buffer[2] = 'f';
+		Buffer[3] = '\0';
+		return;
+	}
+	//too small to resolve (resolution of 1/8)
+	if (exponent < -3)
+	{
+		Buffer[0] = '0';
+		Buffer[1] = '\0';
+		return;
+	}
+	count = 0;
+	//add negative sign (if applicable)
+	if (helper.sign)
+	{
+		Buffer[0] = '-';
+		count++;
+	}
+	//get the integer part
+	int_part = mantissa >> (23 - exponent);
+	//convert to string
+	itoa(int_part, &Buffer[count],10);
+	
+	//find the end of the integer
+	for (i = 0; i < 8; i++)
+	if (Buffer[i] == '\0')
+	{
+		count = i;
+		break;
+	}
+	//not enough room in the buffer for the frac part
+	if (count > 5)
+	return;
+	//add the decimal point
+	Buffer[count++] = '.';
+	//use switch to resolve the fractional part
+	switch (0x7 & (mantissa  >> (20 - exponent)))
+	{
+		case 0:
+		frac_part[0] = '0';
+		frac_part[1] = '0';
+		frac_part[2] = '0';
+		break;
+		case 1:
+		frac_part[0] = '1';
+		frac_part[1] = '2';
+		frac_part[2] = '5';
+		break;
+		case 2:
+		frac_part[0] = '2';
+		frac_part[1] = '5';
+		frac_part[2] = '0';
+		break;
+		case 3:
+		frac_part[0] = '3';
+		frac_part[1] = '7';
+		frac_part[2] = '5';
+		break;
+		case 4:
+		frac_part[0] = '5';
+		frac_part[1] = '0';
+		frac_part[2] = '0';
+		break;
+		case 5:
+		frac_part[0] = '6';
+		frac_part[1] = '2';
+		frac_part[2] = '5';
+		break;
+		case 6:
+		frac_part[0] = '7';
+		frac_part[1] = '5';
+		frac_part[2] = '0';
+		break;
+		case 7:
+		frac_part[0] = '8';
+		frac_part[1] = '7';
+		frac_part[2] = '5';
+		break;
+	}
+	//add the fractional part to the output string
+	for (i = 0; i < 3; i++)
+	if (count < 7)
+	Buffer[count++] = frac_part[i];
+	//make sure the output is terminated
+	Buffer[count] = '\0';
+}
+
+// calibrated, used to find temp at degrees f
+void func2()
+{
+	sensor = adc_read(0);// adc value
+	temperature = (float)sensor/1023;
+	temperature = temperature * 5000;
+	temperature = (temperature-500) * .1;
+	temperature = (temperature * 1.8) + 12;
+	temperature -= 12;
+	
+}
+
+enum LEDState {start, s1} led_state;
+void LEDS_Init(){
+	led_state = start;
+}
+
+void LEDS_Tick()
+{
+	switch(led_state)
+	{
+		case start:
+		func2();
+		if((GetBit(PINB,0) == 1) && (GetBit(PINB,1) == 0))
+		{
+			ar[29] = 'I';
+			ar[30] = 'N';
+			ar[31] = ' ';
+			dogstatus = 1;
+			eeprom_write_word((uint16_t*)70,dogstatus);
+		}
+		else if((GetBit(PINB,0) == 0) && (GetBit(PINB,1) == 1))
+		{
+			ar[29] = 'O';
+			ar[30] = 'U';
+			ar[31] = 'T';
+			dogstatus = 2;
+			eeprom_write_word((uint16_t*)70,dogstatus);
+		}
+		else 
+		{
+			dogstatus = eeprom_read_word((uint16_t*)70);
+			if(dogstatus == 1)
+			{
+				ar[29] = 'I';
+				ar[30] = 'N';
+				ar[31] = ' ';
+			}
+			else if(dogstatus == 2)
+			{
+				ar[29] = 'O';
+				ar[30] = 'U';
+				ar[31] = 'T';
+			}
+		}
+		ftoa(temperature,&test);
+			LCD_ClearScreen();
+			ar[7] = test[0];
+			ar[8] = test[1];
+			ar[9] = test[2];
+			ar[10] = test[3];
+			ar[11] = test[4];
+			LCD_DisplayString(1,ar);
+		
+		break;
+		
+	    default:
+		break;
+	}
+}
+
+void LedSecTask()
+{
+	LEDS_Init();
+   for(;;) 
+   { 	
+	LEDS_Tick();
+	vTaskDelay(400); 
+   }
+}
+
+
+
+void StartSecPulse(unsigned portBASE_TYPE Priority)
+{
+	xTaskCreate(LedSecTask, (signed portCHAR *)"LedSecTask", configMINIMAL_STACK_SIZE, NULL, Priority, NULL );
+	//xTaskCreate(LedSecTask1, (signed portCHAR *)"LedSecTask", configMINIMAL_STACK_SIZE, NULL, Priority, NULL );
+	//xTaskCreate(LedSecTask2, (signed portCHAR *)"LedSecTask", configMINIMAL_STACK_SIZE, NULL, Priority, NULL );
+}	
+ 
+int main(void) 
+{ 
+   DDRA = 0x00; PORTA = 0xFF;
+   DDRB = 0x00; PORTB = 0xFF;
+   DDRC = 0xFF; PORTC = 0x00;
+   DDRD = 0xFF; PORTD = 0x00;
+   LCD_init();
+   LCD_ClearScreen();
+   
+   //Start Tasks  
+   adc_init();
+   StartSecPulse(1);
+   //RunSchedular 
+   vTaskStartScheduler(); 
+   return 0; 
+}
